@@ -113,9 +113,11 @@ def send_to_telegram(message, file_path=None):
 
 # --- Background Task ---
 def run_scraper_job():
-    send_to_telegram("🚀 Scraping started! Reading local .txt files...")
+    # Wait briefly for the web server to fully bind before sending messages
+    time.sleep(5)
+    send_to_telegram("🚀 App deployed! Scraping started automatically. Reading local .txt files...")
     
-    # 1. Find all .txt files in the same directory, EXCEPT requirements.txt
+    # Find all .txt files in the same directory, EXCEPT requirements.txt
     txt_files = [f for f in glob.glob("*.txt") if f != "requirements.txt"]
     
     if not txt_files:
@@ -124,66 +126,67 @@ def run_scraper_job():
         
     send_to_telegram(f"📁 Found {len(txt_files)} file(s): {', '.join(txt_files)}")
 
-    # 2. Extract all URLs from all the text files
-    urls = []
+    # Process each file one by one
     for file in txt_files:
         try:
             with open(file, 'r', encoding='utf-8') as f:
-                # Replace newlines with commas just in case, then split
                 content = f.read().replace('\n', ',')
-                urls.extend([u.strip() for u in content.split(',') if u.strip()])
-        except Exception as e:
-            send_to_telegram(f"⚠️ Error reading {file}: {e}")
+                urls = [u.strip() for u in content.split(',') if u.strip()]
+            
+            # Remove duplicates
+            urls = list(set(urls))
+            
+            if not urls:
+                send_to_telegram(f"⚠️ No valid URLs found in {file}. Skipping...")
+                continue
+                
+            send_to_telegram(f"⚙️ Processing '{file}' ({len(urls)} URLs)...")
+            
+            # Name the CSV file after the text file (e.g., scraped_data_file1.csv)
+            csv_file = f"scraped_data_{file.replace('.txt', '')}.csv"
+            
+            with open(csv_file, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(['email', 'mobile', 'website'])
 
-    # Remove duplicates if any
-    urls = list(set(urls))
+                for i, base_url in enumerate(urls, 1):
+                    if not base_url.startswith(('http://', 'https://')):
+                        base_url = 'http://' + base_url
 
-    if not urls:
-        send_to_telegram("❌ Files were found, but no URLs were inside them.")
-        return
+                    visited, emails, phones = crawl_website(base_url)
 
-    # 3. Process the URLs
-    csv_file = "scraped_data.csv"
-    with open(csv_file, 'w', newline='', encoding='utf-8') as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(['email', 'mobile', 'website'])
-
-        for i, base_url in enumerate(urls, 1):
-            if not base_url.startswith(('http://', 'https://')):
-                base_url = 'http://' + base_url
-
-            visited, emails, phones = crawl_website(base_url)
-
-            if emails:
-                for email in emails:
-                    if phones:
-                        for phone in phones:
-                            writer.writerow([email, phone, base_url])
+                    if emails:
+                        for email in emails:
+                            if phones:
+                                for phone in phones:
+                                    writer.writerow([email, phone, base_url])
+                            else:
+                                writer.writerow([email, '', base_url])
                     else:
-                        writer.writerow([email, '', base_url])
-            else:
-                for phone in phones:
-                    writer.writerow(['', phone, base_url])
-                if not phones:
-                     writer.writerow(['', '', base_url])
-                     
-            # Optional: Send a progress update every 50 websites
-            if i % 50 == 0:
-                send_to_telegram(f"⏳ Progress: Scraped {i}/{len(urls)} websites...")
+                        for phone in phones:
+                            writer.writerow(['', phone, base_url])
+                        if not phones:
+                             writer.writerow(['', '', base_url])
+                             
+            # Send the CSV immediately after this specific file is done
+            send_to_telegram(f"✅ Scraping complete for '{file}'. Here is your data:", csv_file)
+            
+        except Exception as e:
+            send_to_telegram(f"❌ Error processing {file}: {e}")
+            
+    send_to_telegram("🎉 All text files have been processed successfully!")
 
-    # 4. Send final CSV to Telegram
-    send_to_telegram(f"✅ Scraping complete! Processed {len(urls)} websites. Here is your data:", csv_file)
+# --- Start Background Job Automatically ---
+# We use an environment variable to ensure the thread only starts once
+if os.environ.get('SCRAPER_STARTED') != '1':
+    os.environ['SCRAPER_STARTED'] = '1'
+    thread = threading.Thread(target=run_scraper_job)
+    thread.start()
 
 # --- Flask Routes ---
 @app.route('/')
 def home():
-    return "Bot is running! Visit /start to begin the scraping process."
-
-@app.route('/start')
-def start_scraping():
-    thread = threading.Thread(target=run_scraper_job)
-    thread.start()
-    return "Scraping has been triggered in the background. Check your Telegram!"
+    return "Bot is running and scraping in the background automatically!"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
