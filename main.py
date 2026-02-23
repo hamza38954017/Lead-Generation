@@ -12,6 +12,7 @@ from flask import Flask
 # ========== CONFIGURATION ==========
 REQUEST_DELAY = 1          # Seconds between requests
 TIMEOUT = 10               # Request timeout in seconds
+MAX_PAGES_PER_SITE = 10    # MAXIMUM pages to check per website to prevent deep crawling
 
 # Telegram Credentials
 TELEGRAM_BOT_TOKEN = "8349995675:AAE9grCMm22vWOzmAjlDtpRd4iMR8IQiVgA"
@@ -64,9 +65,18 @@ def find_interesting_links(soup, base_url, base_domain):
         full = normalize_url(a['href'], base_url)
         if not is_internal_link(full, base_domain):
             continue
+            
         path = urlparse(full).path.lower()
-        if any(keyword in path for keyword in KEYWORDS):
+        
+        # STRICT MATCHING: Make sure the keyword is an isolated word in the URL, 
+        # not just a substring of a random blog post title.
+        if any(re.search(rf'\b{re.escape(keyword)}\b', path) for keyword in KEYWORDS):
             links.add(full)
+            
+        # Prevent adding too many links to memory
+        if len(links) >= MAX_PAGES_PER_SITE:
+            break
+            
     return links
 
 # --- Core Crawling Logic ---
@@ -75,6 +85,10 @@ def crawl_website(base_url):
     to_visit = [base_url]
 
     while to_visit:
+        # Stop crawling if we reached our maximum allowed pages for this site
+        if len(visited) >= MAX_PAGES_PER_SITE:
+            break
+            
         url = to_visit.pop(0)
         if url in visited: continue
 
@@ -89,12 +103,15 @@ def crawl_website(base_url):
             all_phones.update(extract_phones(text))
             visited.add(url)
 
+            # ONLY extract links if we are currently on the home page (base_url)
+            # This skips digging deeper into sub-pages.
             if url == base_url:
                 domain = urlparse(base_url).netloc
                 new_links = find_interesting_links(soup, url, domain)
                 for link in new_links:
                     if link not in visited and link not in to_visit:
                         to_visit.append(link)
+                        
             time.sleep(REQUEST_DELAY)
         except Exception:
             pass
@@ -186,7 +203,7 @@ if os.environ.get('SCRAPER_STARTED') != '1':
 # --- Flask Routes ---
 @app.route('/')
 def home():
-    return "Bot is running and scraping in the background automatically!"
+    return "Bot is running and scraping strictly targeted pages in the background!"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
